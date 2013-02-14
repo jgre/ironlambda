@@ -7,15 +7,13 @@
   "A protocol for things that can be turned into a single MIDI pitch value."
   (midi [note-or-pitch] "Return the MIDI pitch value of a note or pitch record."))
 
-(defn pitch->str
-  "String representation for a pitch."
-  [{:keys [letter accidental octave]}]
-  (str letter (cond (= :sharp accidental) "#" (= :flat accidental) "b") octave))
-
 (defrecord Pitch [letter accidental octave]
   MidiValue
   (midi [p]
-    (ot/note (pitch->str p))))
+    (ot/note (str p)))
+  Object
+  (toString [{:keys [letter accidental octave]}]
+    (str letter (cond (= :sharp accidental) "#" (= :flat accidental) "b") octave)))
 
 (defprotocol Playable
   "A protocol for musical constructs that can be played on an instrument."
@@ -31,7 +29,9 @@
       (if n
         (let [id (ot/at (metronome beat) (instrument (midi n)))]
           (ot/at (metronome end) (ot/ctl id :gate 0))))
-      end)))
+      end))
+  Object
+  (toString [{:keys [pitch duration]}] (str "(note " pitch " " duration ")")))
 
 (defn pitch
   "Return a new pitch record"
