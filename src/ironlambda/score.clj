@@ -3,47 +3,60 @@
   (:require [overtone.core :as ot]
             [overtone.inst.sampled-piano :refer [sampled-piano]]))
 
-(defprotocol MidiValue
-  "A protocol for things that can be turned into a single MIDI pitch value."
-  (midi [note-or-pitch] "Return the MIDI pitch value of a note or pitch record."))
+(defmulti notation
+  "Return a string representing the musical structure in the DSL format."
+  type)
 
-(defrecord Pitch [letter accidental octave]
-  MidiValue
-  (midi [p]
-    (ot/note (str p)))
-  Object
-  (toString [{:keys [letter accidental octave]}]
-    (str letter (cond (= :sharp accidental) "#" (= :flat accidental) "b") octave)))
+(defmulti midi
+  "Return the MIDI pitch value of a note or pitch record."
+  type)
 
-(defprotocol Playable
-  "A protocol for musical constructs that can be played on an instrument."
-  (play [music metronome beat instrument]
-    "Play a musical construct on 'instrument' when 'metronome' is at 'beat'"))
-
-(defrecord Note [pitch duration]
-  MidiValue
-  (midi [{pitch :pitch}] (midi pitch))
-  Playable
-  (play [n metronome beat instrument]
-    (let [end (+ beat (:duration n))]
-      (if n
-        (let [id (ot/at (metronome beat) (instrument (midi n)))]
-          (ot/at (metronome end) (ot/ctl id :gate 0))))
-      end))
-  Object
-  (toString [{:keys [pitch duration]}] (str "(note " pitch " " duration ")")))
+(defmulti play
+  "(play instrument metronome beat music)
+  Play a 'music' on an 'instrument' when 'metronome' is at 'beat'."
+  (fn [instrument metonome beat music] (type music)))
 
 (defn pitch
-  "Return a new pitch record"
+  "Return a new pitch structure."
   [letter accidental octave]
-  (ironlambda.score.Pitch. (Character/toUpperCase letter) accidental octave))
+  (with-meta {:letter (Character/toUpperCase letter) :accidental accidental :octave octave}
+    {:type ::Pitch}))
+
+(defmethod notation ::Pitch
+  [{:keys [letter accidental octave]}]
+  (str letter (cond (= :sharp accidental) "#" (= :flat accidental) "b") octave))
+
+(defmethod midi ::Pitch
+  [pitch]
+  (ot/note (notation pitch)))
 
 (defn note
-  "Return a new note record."
+  "Return a new note structure."
   ([pitch duration]
-     (Note. pitch duration))
+     (with-meta {:pitch pitch :duration duration}
+       {:type ::Note}))
   ([letter accidental octave duration]
      (note (pitch letter accidental octave) duration)))
+
+(defmethod notation ::Note
+  [{:keys [pitch duration]}]
+  (str "(note " (notation pitch) " " duration ")"))
+
+(defmethod midi ::Note
+  [{pitch :pitch}]
+  (midi pitch))
+
+(defmethod play ::Note
+  [instrument metronome beat n]
+  (let [end (+ beat (:duration n))]
+    (if n
+      (let [id (ot/at (metronome beat) (instrument (midi n)))]
+        (ot/at (metronome end) (ot/ctl id :gate 0))))
+    end))
+
+(derive ::Note ::Playable)
+
+(derive ::Notes ::Playable)
 
 (defn notes
   "Return a sequence of note records from a flat argument list of pitches and durations."
@@ -53,8 +66,8 @@
         (fn [{:keys [notes cur]} x]
           (cond
            (empty? cur)
-           (cond (isa? (type x) ironlambda.score.Pitch)  {:notes notes :cur [x]}
-                 (satisfies? ironlambda.score.Playable x) {:notes (conj (vec notes) x) :cur nil}
+           (cond (isa? (type x) ::Pitch)    {:notes notes :cur [x]}
+                 (isa? (type x) ::Playable) {:notes (conj notes x) :cur nil}
                  :else (throw (RuntimeException. (str "Unexpected value " x " of type " (type x)
                                                       " where a pitch or a playable construct was expected."))))
            (= 1 (count cur))
@@ -63,25 +76,23 @@
              (throw (RuntimeException. (str "Unexpected value " x " of type " (type x)
                                             " where a numerical duration was expected."))))
            :else
-           (cond (= ironlambda.score.Pitch (type x))  {:notes (conj (vec notes) (apply note cur)) :cur [x]}
-                 (satisfies? ironlambda.score.Playable x)
-                 {:notes (conj (vec notes) (apply note cur) x) :cur nil}
+           (cond (isa? (type x) ::Pitch) {:notes (conj notes (apply note cur)) :cur [x]}
+                 (isa? (type x) ::Playable)
+                 {:notes (conj notes (apply note cur) x) :cur nil}
                  :else {:notes notes :cur (conj cur x)})))
-        {})
-       ((fn [{:keys [notes cur]}] (conj (vec notes) (apply note cur))))))
+        {:notes [] :cur nil})
+       ((fn [{:keys [notes cur]}] (with-meta (conj notes (apply note cur)) {:type ::Notes})))))
 
-(extend-type clojure.lang.Sequential
-  Playable
-  (play [score metronome beat instrument]
-    (if-let [cur-note (first score)]
-      (let [next-beat (play cur-note metronome beat instrument)]
-        (ot/apply-at (metronome next-beat) play (next score) metronome next-beat instrument [])))))
 
-(defrecord Simultaneity [playables duration]
-  Playable
-  (play [sim metronome beat instrument]
-    (doseq [p (:playables sim)] (play p metronome beat instrument))
-    (+ beat (:duration sim))))
+(defmethod play ::Notes
+  [instrument metronome beat notes]
+  (if-let [cur-note (first notes)]
+    (let [next-beat (play instrument metronome beat cur-note)]
+      (ot/apply-at (metronome next-beat) play instrument metronome next-beat
+                   (with-meta (next notes) (meta notes)) []))))
+
+(derive ::Simultaneity ::Playable)
+(derive ::Chord ::Simultaneity)
 
 (defn chord
   "Return a chord record containing an arbitrary number of notes. If no
@@ -90,9 +101,14 @@
      (let [duration (apply max (map :duration notes))]
        (chord notes duration)))
   ([notes duration]
-     (Simultaneity. notes duration))
+     (with-meta {:playables notes :duration duration} {:type ::Chord}))
   ([duration pitch1 pitch2 & pitches]
      (chord (map #(note % duration) (concat [pitch1 pitch2] pitches)) duration)))
+
+(defmethod play ::Simultaneity
+  [instrument metronome beat sim]
+  (doseq [p (:playables sim)] (play instrument metronome beat p))
+  (+ beat (:duration sim)))
 
 (defn duration
   "Calculate the duration of a sequence of playables."
@@ -102,7 +118,7 @@
 (defn voices
   "Return a structure of multiple sequences of notes to be played simulaneously."
   ([vs duration]
-     (Simultaneity. vs duration))
+     (with-meta {:playables vs :duration duration} {:type ::Simultaneity}))
   ([vs]
      (let [durations (map duration vs)]
        (voices vs (apply max durations)))))
@@ -111,31 +127,24 @@
   "Play a playable structure on an instrument with a number of beats per minute (default is 120)."
   ([instrument playable bpm]
      (let [m (ot/metronome bpm)]
-       (play playable m (m) instrument)))
+       (play instrument m (m) playable)))
   ([instrument playable]
      (perform instrument playable 120)))
 
 (def piano (partial perform sampled-piano))
 
 (comment
+  (use 'ironlambda.notes)
   (def c (chord 3 C4 G4))
-  (piano-play c)
+  (piano c)
 
-  (satisfies? Play c)
-
-  (= (type C3) ironlambda.score.Pitch)
   (def soprano (notes A4 2 D5 2 C5 2 A4 2))
+
   (def alto (notes D4 1 E4 1 F4 1 G4 1 A4 1 A3 0.5 B3 0.5 C4 0.5 A3 0.5 F4 1))
-
+  (type alto)
   (pprint alto)
-  (piano-play soprano)
-  (piano-play alto)
-  (piano-play (voices [soprano alto]))
+  (piano soprano)
+  (piano alto)
+  (piano (voices [soprano alto]))
 
-  (piano-play (chord 4 C4 E4 G4 B4) )
-
-  (play (notes C4 1 D4 1 E4 1) m (m) sampled-piano)
-
-  (play (chord (notes C4 1 C3 4)) m (m) sampled-piano)
-
-  (piano-play (notes (chord (notes C4 1 C3 4) 1) D4 1 E4 0.5 D4 0.5 C4 1)))
+  (piano (chord 4 C4 E4 G4 B4)))
