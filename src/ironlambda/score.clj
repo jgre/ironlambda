@@ -91,6 +91,12 @@
       (ot/apply-at (metronome next-beat) play instrument metronome next-beat
                    (with-meta (next notes) (meta notes)) []))))
 
+(defmethod notation ::Notes
+  [notes]
+  (apply str "(notes"
+         (concat (map (fn [{:keys [pitch duration]}] (str " " (notation pitch) " " duration)) notes)
+                 [")"])))
+
 (derive ::Simultaneity ::Playable)
 (derive ::Chord ::Simultaneity)
 
@@ -109,6 +115,20 @@
   [instrument metronome beat sim]
   (doseq [p (:playables sim)] (play instrument metronome beat p))
   (+ beat (:duration sim)))
+
+(defmethod notation ::Simultaneity
+  [{:keys [playables duration]}]
+  (apply str "(voices " (concat (interpose " " (map notation playables)) [" " duration ")"])))
+
+(defmethod notation ::Chord
+  [{:keys [playables duration]}]
+  (if (every? #(= duration (:duration %)) playables)
+    (apply str "(chord " duration
+           (concat (map (fn [{:keys [pitch]}] (str " " (notation pitch))) playables)
+                   [")"]))
+    (apply str "(chord"
+           (concat (map (fn [note] (str " " (notation note))) playables)
+                   [" " duration ")"]))))
 
 (defn duration
   "Calculate the duration of a sequence of playables."
@@ -146,5 +166,11 @@
   (piano soprano)
   (piano alto)
   (piano (voices [soprano alto]))
+  (notation (voices [soprano alto]))
 
-  (piano (chord 4 C4 E4 G4 B4)))
+  (notation alto)
+
+  (piano (chord 4 C4 E4 G4 B4))
+  (notation (chord 4 C4 E4 G4 B4))
+
+  (notation (chord [(note C4 2) (note G4 1)])))
