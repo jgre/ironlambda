@@ -1,7 +1,6 @@
 (ns ironlambda.score
   "Defining, manipulating, and playing scores."
-  (:require [overtone.core :as ot]
-            [overtone.inst.sampled-piano :refer [sampled-piano]]))
+  (:require [overtone.core :as ot]))
 
 (defmulti notation
   "Return a string representing the musical structure in the DSL format."
@@ -126,9 +125,9 @@
     (apply str "(chord " duration
            (concat (map (fn [{:keys [pitch]}] (str " " (notation pitch))) playables)
                    [")"]))
-    (apply str "(chord"
-           (concat (map (fn [note] (str " " (notation note))) playables)
-                   [" " duration ")"]))))
+    (apply str "(chord ["
+           (concat (interpose " " (map (fn [note] (notation note)) playables))
+                   ["] " duration ")"]))))
 
 (defn duration
   "Calculate the duration of a sequence of playables."
@@ -143,26 +142,18 @@
      (let [durations (map duration vs)]
        (voices vs (apply max durations)))))
 
-(defn perform
-  "Play a playable structure on an instrument with a number of beats per minute (default is 120)."
-  ([instrument playable bpm]
-     (let [m (ot/metronome bpm)]
-       (play instrument m (m) playable)))
-  ([instrument playable]
-     (perform instrument playable 120)))
-
-(def piano (partial perform sampled-piano))
-
 (comment
   (use 'ironlambda.notes)
+  (use 'ironlambda.performance)
+
   (def c (chord 3 C4 G4))
   (piano c)
 
-  (def soprano (notes A4 2 D5 2 C5 2 A4 2))
+  (def soprano (notes A4 2 (chord 2 D5 D4) C5 2 A4 2))
 
   (def alto (notes D4 1 E4 1 F4 1 G4 1 A4 1 A3 0.5 B3 0.5 C4 0.5 A3 0.5 F4 1))
   (type alto)
-  (pprint alto)
+  (pprint soprano)
   (piano soprano)
   (piano alto)
   (piano (voices [soprano alto]))
