@@ -21,6 +21,26 @@
   (with-meta {:letter (Character/toUpperCase letter) :accidental accidental :octave octave}
     {:type ::Pitch}))
 
+(defn pitch-range
+  "Return a lazy seq of all pitches for the given range of midi octaves."
+  [rng]
+  (for [letter [\a \b \c \d \e \f \g] acc [:flat nil :sharp] octave rng
+        :when (not (or (and (= letter \f) (= acc :flat))
+                       (and (= letter \b) (= acc :sharp))
+                       (and (= letter \c) (= acc :flat))
+                       (and (= letter \e) (= acc :sharp))))]
+    (pitch letter acc octave)))
+
+(defn apply-accidental
+  "Modify a pitch structure with a numerical accidental."
+  [{old-acc :accidental :as pitch} modifier]
+  (let [new-acc (cond (and (= old-acc :flat)  (pos? modifier)) nil
+                      (and (= old-acc nil)    (neg? modifier)) :flat
+                      (and (= old-acc nil)    (pos? modifier)) :sharp
+                      (and (= old-acc :sharp) (neg? modifier)) nil
+                      :else old-acc)]
+    (assoc pitch :accidental new-acc)))
+
 (defmethod notation ::Pitch
   [{:keys [letter accidental octave]}]
   (str letter (cond (= :sharp accidental) "#" (= :flat accidental) "b") octave))
@@ -80,8 +100,9 @@
                  {:notes (conj notes (apply note cur) x) :cur nil}
                  :else {:notes notes :cur (conj cur x)})))
         {:notes [] :cur nil})
-       ((fn [{:keys [notes cur]}] (with-meta (conj notes (apply note cur)) {:type ::Notes})))))
-
+       ((fn [{:keys [notes cur]}]
+          (with-meta (if cur (conj notes (apply note cur)) notes)
+            {:type ::Notes})))))
 
 (defmethod play ::Notes
   [instrument metronome beat notes]
@@ -142,6 +163,111 @@
      (let [durations (map duration vs)]
        (voices vs (apply max durations)))))
 
+(defn rel-note
+  "Return a structure that represents a note relative to a scale.
+
+  Relative notes are abstract in that they are not tied to any concrete
+  scale, but only define the interval from a root note.
+  Relative notes can be converted to concrete notes with the in-scale function.
+  The relative-to function can be used to convert from a concrete note to a relative one."
+  [interval accidental duration]
+  (with-meta {:interval interval :accidental accidental :duration duration}
+    {:type ::RelativeNote}))
+
+(def scale-intervals
+  {:major [2 2 1 2 2 2 1]
+   :minor [2 1 2 2 1 2 2]})
+
+(def midi-pitch-map
+  (apply merge-with concat
+         (map (fn [p] {(midi p) [p]}) (pitch-range (range 8)))))
+
+(defn scale
+  "Return an infinite sequence of intervals for a scale, either rising or falling."
+  [[key gender] falling?]
+  (cycle (if falling? (reverse (scale-intervals gender)) (scale-intervals gender))))
+
+(defn cumulative-intervals
+  "Return a lazy seq of the cumulative intervals based on the input sequence of intervals."
+  [intervals]
+  (reductions + intervals))
+
+(defn interval
+  "Return the interval corresponding to a number of semitones on a scale.
+
+  Intervals are 1-based, so that 0 semitones result in an interval of 1 (prime). On a major scale
+  2 semitones result in an interval of 2, 4 semitones give you an interval of 3.
+  If the number of semitones does not match a note of the scale, the previous matching interval is returned.
+  E.g. on a major scale 1 semitone corresponds to an interval of 1."
+  [[key gender] semitones]
+  (let [factor (if (neg? semitones) -1 1)]
+    (* factor (inc (count (take-while #(<= % (* factor semitones))
+                                      (cumulative-intervals (scale [key gender] (neg? semitones)))))))))
+
+(defn semitones
+  "Return the number of semitones corresponding to an interval on a scale.
+
+  This function is the inverse of the interval function."
+  [[key gender] interval]
+  (let [factor (if (neg? interval) -1 1)]
+    (* factor (nth (cons 0 (cumulative-intervals (scale [scale gender] (neg? interval))))
+                   (dec (* factor interval))))))
+
+(defn resolve-enharmonic
+  "Return the correct pitch for the interval in the scale."
+  [[key gender] interval]
+  (let [midi-val (+ (midi key) (semitones [key gender] interval))
+        enharmonics (midi-pitch-map midi-val)]
+    (cond
+     (= 1 (count enharmonics)) (first enharmonics)
+     (= (:letter (first enharmonics)) (:letter (resolve-enharmonic [key gender] (dec interval))))
+     (last enharmonics)
+     :else (first enharmonics))))
+
+(defmulti into-scale
+  "Return concrete notes based on a relative ones and a scale."
+  (fn [scale rel] (type rel)))
+
+(defmethod into-scale ::RelativeNote
+  [[key gender] rel-note]
+  (let [pitch (resolve-enharmonic [key gender] (:interval rel-note))]
+    (note
+     (apply-accidental pitch (:accidental rel-note))
+     (:duration rel-note))))
+
+(defmethod into-scale clojure.lang.Sequential
+  [scale rel-notes]
+  (apply notes (map (partial into-scale scale) rel-notes)))
+
+(defmulti relative-to
+  "Return relative notes that represents the interval between the input notes and the root of [key gender]."
+  (fn [scale note] (type note)))
+
+(defmethod relative-to ::Note
+  [[key gender] note]
+  (let [sts (- (midi note) (midi key))
+        direction (if (neg? sts) -1 1)
+        lower-bound (interval [key gender] sts)
+        upper-bound (interval [key gender] (+ sts direction))
+        [intv acc] (cond (= sts (semitones [key gender] lower-bound)) [lower-bound 0]
+                         (= (-> note :pitch :letter)
+                            (-> (resolve-enharmonic [key gender] lower-bound) :letter))
+                         [lower-bound direction]
+                         :else [upper-bound (* direction -1)])]
+    (rel-note intv acc (:duration note))))
+
+(defmethod relative-to ::Notes
+  [scale notes]
+  (map (partial relative-to scale) notes))
+
+(defn transpose
+  "Return notes corresponding to src transposed from src-key/src-gender (e.g [D4 :minor])
+  to dest-key/dest-gender."
+  [src-scale dest-scale src]
+  (->> src
+       (relative-to src-scale)
+       (into-scale dest-scale)))
+
 (comment
   (use 'ironlambda.notes)
   (use 'ironlambda.performance)
@@ -158,6 +284,15 @@
   (piano alto)
   (piano (voices [soprano alto]))
   (notation (voices [soprano alto]))
+
+  (def subj (notes D4 2 A4 2 F4 2 D4 2 C#4 2 D4 1 E4 1 F4 2.5 G4 0.5 F4 0.5 E4 0.5 D4 1))
+  (->> subj (transpose [D4 :minor] [A4 :minor]) notation)
+
+  ;;             "(notes A4 2 E5 2 C5 2 A4 2 Ab4 2 A4 1 B4 1 C5 2.5 D5 0.5 C5 0.5 B4 0.5 A4 1)"
+  (def subj-a-min (notes A4 2 D5 2 C5 2 A4 2 G#4 2 A4 1 B4 1 C5 2.5 D5 0.5 C5 0.5 Bb4 0.5 A4 1))
+  (relative-to [D4 :minor] (note C#4 2))
+  (piano subj-a-min)
+  (piano (notes B4 1 Bb4 1))
 
   (notation alto)
 
