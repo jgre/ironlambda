@@ -18,6 +18,13 @@
 (defn pitch
   "Return a new pitch structure."
   [letter accidental octave]
+  {:pre [(#{\A \B \C \D \E \F \G} (Character/toUpperCase letter))
+         (contains? #{:flat nil :sharp} accidental)
+         ((set (range 8)) octave)
+         (not (and (= (Character/toUpperCase letter) \F) (= accidental :flat)))
+         (not (and (= (Character/toUpperCase letter) \B) (= accidental :sharp)))
+         (not (and (= (Character/toUpperCase letter) \C) (= accidental :flat)))
+         (not (and (= (Character/toUpperCase letter) \E) (= accidental :sharp)))]}
   (with-meta {:letter (Character/toUpperCase letter) :accidental accidental :octave octave}
     {:type ::Pitch}))
 
@@ -34,6 +41,7 @@
 (defn apply-accidental
   "Modify a pitch structure with a numerical accidental."
   [{old-acc :accidental :as pitch} modifier]
+  {:pre [#{-1 0 1} modifier]}
   (let [new-acc (cond (and (= old-acc :flat)  (pos? modifier)) nil
                       (and (= old-acc nil)    (neg? modifier)) :flat
                       (and (= old-acc nil)    (pos? modifier)) :sharp
@@ -52,6 +60,7 @@
 (defn note
   "Return a new note structure."
   ([pitch duration]
+     {:pre [(pos? duration)]}
      (with-meta {:pitch pitch :duration duration}
        {:type ::Note}))
   ([letter accidental octave duration]
@@ -171,6 +180,9 @@
   Relative notes can be converted to concrete notes with the in-scale function.
   The relative-to function can be used to convert from a concrete note to a relative one."
   [interval accidental duration]
+  {:pre [(not= 0 interval)
+         (#{-1 0 1} accidental)
+         (pos? duration)]}
   (with-meta {:interval interval :accidental accidental :duration duration}
     {:type ::RelativeNote}))
 
