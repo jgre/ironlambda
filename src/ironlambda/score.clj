@@ -77,7 +77,7 @@
 (defmethod play ::Note
   [instrument metronome beat n]
   (let [end (+ beat (:duration n))]
-    (if n
+    (if (and n (:pitch n))
       (let [id (ot/at (metronome beat) (instrument (midi n)))]
         (ot/at (metronome end) (ot/ctl id :gate 0))))
     end))
@@ -95,6 +95,7 @@
           (cond
            (empty? cur)
            (cond (isa? (type x) ::Pitch)    {:notes notes :cur [x]}
+                 (nil? x)                   {:notes notes :cur [x]}
                  (isa? (type x) ::Playable) {:notes (conj notes x) :cur nil}
                  :else (throw (RuntimeException. (str "Unexpected value " x " of type " (type x)
                                                       " where a pitch or a playable construct was expected."))))
@@ -105,6 +106,7 @@
                                             " where a numerical duration was expected."))))
            :else
            (cond (isa? (type x) ::Pitch) {:notes (conj notes (apply note cur)) :cur [x]}
+                 (nil? x)                {:notes (conj notes (apply note cur)) :cur [x]}
                  (isa? (type x) ::Playable)
                  {:notes (conj notes (apply note cur) x) :cur nil}
                  :else {:notes notes :cur (conj cur x)})))
@@ -113,12 +115,33 @@
           (with-meta (if cur (conj notes (apply note cur)) notes)
             {:type ::Notes})))))
 
+(defmulti duration
+  "Calculate the duration of a sequence of playables."
+  type)
+
+(defmethod duration :default
+  [ps]
+  (reduce + (map :duration ps)))
+
+(defmethod duration ::Notes
+  [notes]
+  (reduce + (map duration notes)))
+
+(defmethod duration ::Note
+  [n]
+  (:duration n))
+
+(defmethod duration ::Simultaneity
+  [n]
+  (:duration n))
+
 (defmethod play ::Notes
   [instrument metronome beat notes]
   (if-let [cur-note (first notes)]
     (let [next-beat (play instrument metronome beat cur-note)]
       (ot/apply-at (metronome next-beat) play instrument metronome next-beat
-                   (with-meta (next notes) (meta notes)) []))))
+                   (with-meta (next notes) (meta notes)) [])))
+  (+ beat (duration notes)))
 
 (defmethod notation ::Notes
   [notes]
@@ -158,11 +181,6 @@
     (apply str "(chord ["
            (concat (interpose " " (map (fn [note] (notation note)) playables))
                    ["] " duration ")"]))))
-
-(defn duration
-  "Calculate the duration of a sequence of playables."
-  [ps]
-  (reduce + (map :duration ps)))
 
 (defn voices
   "Return a structure of multiple sequences of notes to be played simulaneously."
@@ -287,7 +305,7 @@
   (def c (chord 3 C4 G4))
   (piano c)
 
-  (def soprano (notes A4 2 (chord 2 D5 D4) C5 2 A4 2))
+  (def soprano (notes A4 2 D4 C5 2 A4 2))
 
   (def alto (notes D4 1 E4 1 F4 1 G4 1 A4 1 A3 0.5 B3 0.5 C4 0.5 A3 0.5 F4 1))
   (type alto)
