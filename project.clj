@@ -7,5 +7,4 @@
                  [overtone "LATEST"]]
   :profiles {:dev {:dependencies [[expectations "1.4.22"]]}}
   :plugins [[lein-expectations "0.0.8"]
-            [lein-autoexpect "0.1.2"]]
-  :repl-options {:port 6678})
+            [lein-autoexpect "0.1.2"]])
